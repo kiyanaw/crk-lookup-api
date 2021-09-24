@@ -1,0 +1,50 @@
+service: crk-inflect-worker
+frameworkVersion: "2"
+
+provider:
+  name: aws
+  runtime: python3.7
+  lambdaHashingVersion: "20201221"
+
+constructs:
+  jobs:
+    type: queue
+    worker:
+      handler: handler.consumer
+      layers:
+        - arn:aws:lambda:us-east-1:494185203413:layer:hfst-optimized-lookup:1
+
+functions:
+  producer:
+    handler: handler.producer
+    events:
+      - httpApi:
+          method: post
+          path: /inflect
+    environment:
+      QUEUE_URL: ${construct:jobs.queueUrl}
+  bulk_lookup:
+    handler: handler.bulk_lookup
+    events:
+      - httpApi:
+          method: post
+          path: /bulk-lookup
+    layers:
+      - arn:aws:lambda:us-east-1:494185203413:layer:hfst-optimized-lookup:2
+  suggest:
+    handler: handler.suggest
+    events:
+      - httpApi:
+          method: post
+          path: /suggest
+    layers:
+      - arn:aws:lambda:us-east-1:494185203413:layer:hfst-optimized-lookup:2
+
+plugins:
+  - serverless-lift
+
+package:
+  patterns:
+    - "!node_modules/**"
+    - "!env/**"
+    - "!test/**"
