@@ -29,48 +29,88 @@ def get_transducer(string_path):
 def do_lookup(haystack, needle):
   return haystack(needle)
 
+def analyze_strict(lookup):
+  fst = get_transducer("/opt/crk-strict-analyzer.hfstol")
+  return do_lookup(fst.bulk_lookup, lookup)
+
+def analyze_relaxed(lookup):
+  fst = get_transducer("/opt/crk-relaxed-analyzer.hfstol")
+  return do_lookup(fst.bulk_lookup, lookup)
+
+def generate_strict(lookup):
+  fst = get_transducer("/opt/crk-strict-generator.hfstol")
+  return do_lookup(fst.bulk_lookup, lookup)
+
+
 # Do bulk lookup here
 def bulk_lookup(event, context):
   status_code = 200
-  message = {}
+  result = {}
   if not event.get('body'):
     return {'statusCode': 400, 'body': json.dumps({'message': 'No body was found'})}
+
+  # load main lookups
   try:
     body = json.loads(event['body'])
     logger.info(f'Body: {body}')
     # perform lookup
-    fst = get_transducer("/opt/crk-strict-analyzer.hfstol")
-    result = do_lookup(fst.bulk_lookup, body)
+    result = analyze_strict(body)
+    print(f'result {result}')
   except Exception as e:
     logger.exception('Error reading post body')
-    message = str(e)
+    result = {"error": str(e)}
     status_code = 500
-  print(result)
+
+  # load suggestions
+  try:
+    unknowns = [s for s in result if len(result[s]) == 0]
+    fst = get_transducer("/opt/crk-strict-generator.hfstol")
+    result['_suggestions'] = check_unknowns(unknowns)
+  except Exception as e:
+    print(e)
+    pass
+
+  logger.info(f'final {result}')
   return {'statusCode': status_code, 'body': json.dumps(result, cls=SetEncoder)}
+
+# abstraction for spelling suggestions
+def check_unknowns(items):
+  final = {}
+  result = analyze_relaxed(items)
+  logger.info(f'result: {result}')
+  # {'owāhkomākan': {'PV/o+wâhkômêw+V+TA+Imp+Del+2Sg+3SgO+Err/Orth'}, 'ekwa': {'êkwa+Ipc'}}
+
+  # build a set of {analysis: original} from {original: {analysis}}
+  original_lookup = {result[k].pop(): k for k in result}
+  logger.info(f'original {original_lookup}')
+  # {'PV/o+wâhkômêw+V+TA+Imp+Del+2Sg+3SgO+Err/Orth': 'owāhkomākan', 'êkwa+Ipc': 'ekwa'}
+
+  to_lookup = original_lookup.keys()
+  if to_lookup and len(to_lookup):
+    suggested = generate_strict(to_lookup)
+    logger.info(f'suggested {suggested}')
+    # {'PV/o+wâhkômêw+V+TA+Imp+Del+2Sg+3SgO+Err/Orth': {'ôwâhkômâhkan'}, 'êkwa+Ipc': {'êkwa'}}
+    # match the results
+    for key in suggested.keys():
+      final[original_lookup[key]] = suggested[key].pop()
+
+  return final
 
 def suggest(event, context):
   status_code = 200
-  message = {}
+  final = {}
   if not event.get('body'):
     return {'statusCode': 400, 'body': json.dumps({'message': 'No body was found'})}
   try:
     body = json.loads(event['body'])
     logger.info(f'Body: {body}')
-    # perform lookup
-    fst = get_transducer("/opt/crk-relaxed-analyzer.hfstol")
-    result = do_lookup(fst.bulk_lookup, body)
-
-    result = result.get(body[0])
-    if result and len(result):
-      fst = get_transducer("/opt/crk-strict-generator.hfstol")
-      result = do_lookup(fst.bulk_lookup, result)
-
+    final = check_unknowns(body)
   except Exception as e:
-    logger.exception('Error reading post body')
+    logger.exception('Error reading post body', e)
     message = str(e)
     status_code = 500
-  print(result)
-  return {'statusCode': status_code, 'body': json.dumps(result, cls=SetEncoder)}
+  logger.info(f'final {final}')
+  return {'statusCode': status_code, 'body': json.dumps(final, cls=SetEncoder)}
 
 
 ## Queue/DB stuff below here
